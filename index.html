@@ -1,23 +1,19 @@
-<fƒ!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>3D Road Assistant</title>
 <style>
-body, html { margin:0; padding:0; overflow:hidden; background:white; font-family:sans-serif; }
-#canvas { position:absolute; top:0; left:0; width:100%; height:100%; background:white; }
+body, html { margin:0; padding:0; overflow:hidden; background:black; font-family:sans-serif; }
+#canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
 .ui-overlay {
   position:absolute; top:10px; left:10px; z-index:2;
   background:rgba(255,255,255,0.8); padding:10px; border-radius:10px;
   box-shadow:0 2px 10px rgba(0,0,0,0.3);
   color:black;
 }
-#saveTrainingBtn {
-  position:absolute; top:150px; left:10px; z-index:3;
-  padding:10px; border-radius:5px; border:none; background:limegreen;
-  color:white; font-weight:bold; cursor:pointer;
-}
+button { margin-top:10px; padding:5px 10px; font-size:14px; }
 </style>
 </head>
 <body>
@@ -25,8 +21,8 @@ body, html { margin:0; padding:0; overflow:hidden; background:white; font-family
 <div class="ui-overlay">
   <h3>3D Road Assistant</h3>
   <p>Detects road lanes and cars; self-learning mode enabled.</p>
+  <button id="downloadData">Download Training Data</button>
 </div>
-<button id="saveTrainingBtn">Save Training Data</button>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.9.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -39,151 +35,110 @@ const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
-// Camera
+// Camera setup
 const video = document.createElement('video');
 video.autoplay = true;
 video.muted = true;
 video.playsInline = true;
 
 navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment" } })
-  .then(stream => { video.srcObject = stream; })
-  .catch(err => alert("Camera error: " + err));
+  .then(stream => video.srcObject = stream);
 
+// Alarm
 const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_short.ogg'] });
 
-let leftLane=null, rightLane=null;
-const laneHistory={ left:[], right:[], max:5 };
-const trainingData=[];
+// Load object detection
+let model;
+cocoSsd.load().then(m => { model = m; detectFrame(); });
 
-// Wait for OpenCV.js
-function onOpenCvReady() {
-    console.log("OpenCV ready");
-    cocoSsd.load().then(m=>{
-        model = m;
-        // Wait until video has data
-        video.addEventListener('loadedmetadata', ()=>{
-         video.play();
-       // Wait until a real frame is available
-         const checkFrame = setInterval(()=>{
-        if(video.videoWidth > 0 && video.videoHeight > 0){
-            clearInterval(checkFrame);
-            detectFrame();
-        }
-    }, 50);
-});
+// Training data
+const trainingData = [];
 
-}
-
-// Lane detection
+// Draw straight lane lines
 function detectLanes(frame){
-    if(!cv || !cv.Mat) return;
+  ctx.strokeStyle = 'lime';
+  ctx.lineWidth = 5;
 
-    let src=cv.matFromImageData(frame);
-    let gray=new cv.Mat(), edges=new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
-    cv.Canny(gray, edges, 50, 150);
+  // Two straight lines: left and right lanes
+  const margin = 150; // distance from canvas edges
+  const topOffset = 100; // how high the lanes start at top
 
-    let mask = new cv.Mat.zeros(edges.rows, edges.cols, edges.type());
-    let pts = cv.matFromArray(4,1,cv.CV_32SC2,[
-        0, edges.rows,
-        edges.cols, edges.rows,
-        edges.cols, edges.rows*0.5,
-        0, edges.rows*0.5
-    ]);
-    cv.fillPoly(mask, [pts], [255,255,255,255]);
-    cv.bitwise_and(edges, mask, edges);
+  // Left lane
+  ctx.beginPath();
+  ctx.moveTo(margin, canvas.height);
+  ctx.lineTo(margin + 50, topOffset);
+  ctx.stroke();
 
-    let lines = new cv.Mat();
-    cv.HoughLinesP(edges, lines, 1, Math.PI/180, 50, 50, 50);
-
-    let left=[], right=[];
-    for(let i=0;i<lines.rows;i++){
-        let [x1,y1,x2,y2] = lines.data32S.slice(i*4,i*4+4);
-        let slope=(y2-y1)/(x2-x1+0.0001);
-        if(Math.abs(slope)<0.3) continue;
-        if(slope<0) left.push([x1,y1,x2,y2]);
-        else right.push([x1,y1,x2,y2]);
-    }
-
-    function avgLine(arr){ if(arr.length==0) return null;
-        let x1=0,y1=0,x2=0,y2=0;
-        arr.forEach(l=>{ x1+=l[0]; y1+=l[1]; x2+=l[2]; y2+=l[3]; });
-        return [x1/arr.length, y1/arr.length, x2/arr.length, y2/arr.length];
-    }
-
-    leftLane = avgLine(left) || null;
-    rightLane = avgLine(right) || null;
-
-    // Smoothing
-    if(leftLane){ laneHistory.left.push(leftLane); if(laneHistory.left.length>laneHistory.max) laneHistory.left.shift();
-        leftLane = laneHistory.left.reduce((acc,l)=>acc.map((v,i)=>v+l[i]),[0,0,0,0]).map(v=>v/laneHistory.left.length);
-    }
-    if(rightLane){ laneHistory.right.push(rightLane); if(laneHistory.right.length>laneHistory.max) laneHistory.right.shift();
-        rightLane = laneHistory.right.reduce((acc,l)=>acc.map((v,i)=>v+l[i]),[0,0,0,0]).map(v=>v/laneHistory.right.length);
-    }
-
-    // Draw lanes
-    ctx.strokeStyle='lime'; ctx.lineWidth=5;
-    if(leftLane){ ctx.beginPath(); ctx.moveTo(leftLane[0]*canvas.width/video.videoWidth, leftLane[1]*canvas.height/video.videoHeight);
-        ctx.lineTo(leftLane[2]*canvas.width/video.videoWidth, leftLane[3]*canvas.height/video.videoHeight); ctx.stroke(); }
-    else{ ctx.beginPath(); ctx.moveTo(video.videoWidth*0.25*canvas.width/video.videoWidth, canvas.height);
-        ctx.lineTo(video.videoWidth*0.25*canvas.width/video.videoWidth, canvas.height*0.5); ctx.stroke(); }
-
-    if(rightLane){ ctx.beginPath(); ctx.moveTo(rightLane[0]*canvas.width/video.videoWidth, rightLane[1]*canvas.height/video.videoHeight);
-        ctx.lineTo(rightLane[2]*canvas.width/video.videoWidth, rightLane[3]*canvas.height/video.videoHeight); ctx.stroke(); }
-    else{ ctx.beginPath(); ctx.moveTo(video.videoWidth*0.75*canvas.width/video.videoWidth, canvas.height);
-        ctx.lineTo(video.videoWidth*0.75*canvas.width/video.videoWidth, canvas.height*0.5); ctx.stroke(); }
-
-    src.delete(); gray.delete(); edges.delete(); mask.delete(); lines.delete(); pts.delete();
+  // Right lane
+  ctx.beginPath();
+  ctx.moveTo(canvas.width - margin, canvas.height);
+  ctx.lineTo(canvas.width - margin - 50, topOffset);
+  ctx.stroke();
 }
 
-// Draw objects
+// Draw detected objects
 function drawObjects(predictions){
-    predictions.forEach(pred=>{
-        let x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
-        let y = canvas.height - pred.bbox[1];
-        let width = pred.bbox[2]/video.videoWidth*canvas.width/4;
-        let height = pred.bbox[3]/video.videoHeight*canvas.height/4;
+  predictions.forEach(pred => {
+    let x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
+    let y = canvas.height - pred.bbox[1];
+    let width = pred.bbox[2]/video.videoWidth*canvas.width/4;
+    let height = pred.bbox[3]/video.videoHeight*canvas.height/4;
 
-        if(pred.class==='car'||pred.class==='truck'){ ctx.fillStyle='red';
-            ctx.fillRect(x-width/2,y-height/2,width,height); }
-        else if(pred.class==='person'||pred.class==='dog'||pred.class==='cat'){ ctx.fillStyle='orange';
-            ctx.beginPath(); ctx.arc(x,y,Math.max(width,height)/2,0,Math.PI*2); ctx.fill(); }
-        else{ ctx.fillStyle='blue'; ctx.beginPath(); ctx.arc(x,y,10,0,Math.PI*2); ctx.fill(); }
+    // Car icon
+    if(pred.class==='car'||pred.class==='truck'){
+      ctx.fillStyle='red';
+      ctx.fillRect(x-width/2, y-height/2, width, height);
+    } else if(pred.class==='person'||pred.class==='dog'||pred.class==='cat'){
+      ctx.fillStyle='orange';
+      ctx.beginPath();
+      ctx.arc(x,y,Math.max(width,height)/2,0,Math.PI*2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle='blue';
+      ctx.beginPath();
+      ctx.arc(x,y,10,0,Math.PI*2);
+      ctx.fill();
+    }
 
-        if(pred.bbox[3]>150) beep.play();
-    });
+    // Proximity alarm
+    if(pred.bbox[3] > 150) beep.play();
+  });
 }
 
-// Save training
-function saveTraining(frame,predictions){ trainingData.push({ frame: frame.data, predictions }); }
+// Save frames & predictions
+function saveTraining(frame, predictions){
+  trainingData.push({ frame: Array.from(frame.data), predictions });
+}
+
+// Download training data
+document.getElementById('downloadData').addEventListener('click',()=>{
+  const blob = new Blob([JSON.stringify(trainingData)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'trainingData.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
 
 // Main loop
 function detectFrame(){
-    if(!model||!cv||!cv.Mat||video.videoWidth==0) return requestAnimationFrame(detectFrame);
-    ctx.fillStyle='white'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  if(!model || !cv || !cv.Mat) return requestAnimationFrame(detectFrame);
 
-    const fcanvas=document.createElement('canvas'); fcanvas.width=video.videoWidth; fcanvas.height=video.videoHeight;
-    const fctx=fcanvas.getContext('2d'); fctx.drawImage(video,0,0); const frame=fctx.getImageData(0,0,video.videoWidth,video.videoHeight);
+  // Draw video frame
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
 
-    detectLanes(frame);
+  // Lane detection
+  detectLanes(frame);
 
-    model.detect(video).then(pred=>{
-        drawObjects(pred);
-        saveTraining(frame,pred);
-        requestAnimationFrame(detectFrame);
-    });
+  // Object detection
+  model.detect(video).then(predictions=>{
+    drawObjects(predictions);
+    saveTraining(frame, predictions);
+    requestAnimationFrame(detectFrame);
+  });
 }
-
-// Save button
-document.getElementById('saveTrainingBtn').addEventListener('click',()=>{
-    if(trainingData.length==0){ alert("No training data collected!"); return; }
-    const blob=new Blob([JSON.stringify(trainingData)],{type:"application/json"});
-    const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download="trainingData.json"; a.click(); URL.revokeObjectURL(url);
-});
-
-window.cv=window.cv||{}; cv['onRuntimeInitialized']=onOpenCvReady;
 </script>
 </body>
 </html>
