@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<fƒ!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -61,12 +61,17 @@ function onOpenCvReady() {
     cocoSsd.load().then(m=>{
         model = m;
         // Wait until video has data
-        video.addEventListener('loadeddata', ()=>{
-            if(video.videoWidth>0 && video.videoHeight>0){
-                detectFrame();
-            }
-        });
-    });
+        video.addEventListener('loadedmetadata', ()=>{
+         video.play();
+       // Wait until a real frame is available
+         const checkFrame = setInterval(()=>{
+        if(video.videoWidth > 0 && video.videoHeight > 0){
+            clearInterval(checkFrame);
+            detectFrame();
+        }
+    }, 50);
+});
+
 }
 
 // Lane detection
