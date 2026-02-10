@@ -3,15 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dynamic Lane & Object Detector</title>
+<title>Lane & Object Detector</title>
 <style>
 body, html { margin:0; padding:0; overflow:hidden; background:black; }
 #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
 .ui-overlay {
   position:absolute; top:10px; left:10px; z-index:2;
   background:rgba(255,255,255,0.8); padding:10px; border-radius:10px;
-  box-shadow:0 2px 10px rgba(0,0,0,0.3);
-  font-family:sans-serif;
+  box-shadow:0 2px 10px rgba(0,0,0,0.3); font-family:sans-serif;
 }
 #no-lane {
   position:absolute; top:10px; right:10px; z-index:3;
@@ -24,8 +23,8 @@ body, html { margin:0; padding:0; overflow:hidden; background:black; }
 <body>
 <canvas id="canvas"></canvas>
 <div class="ui-overlay">
-<h3>Lane-Following Detector</h3>
-<p>Green road lines follow detected lanes. Cars and objects appear on road.</p>
+<h3>Lane Detector</h3>
+<p>Green road lines follow lanes; cars/animals detected.</p>
 </div>
 <div id="no-lane" style="display:none;">🚫</div>
 
@@ -37,9 +36,9 @@ body, html { margin:0; padding:0; overflow:hidden; background:black; }
 <script>
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+const noLaneIcon = document.getElementById('no-lane');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
-const noLaneIcon = document.getElementById('no-lane');
 
 let video = document.createElement('video');
 video.autoplay = true;
@@ -50,24 +49,33 @@ video.playsInline = true;
 navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } })
 .then(stream => video.srcObject = stream);
 
-// Lane detection matrices
+// OpenCV variables
 let src, gray, edges;
 let model;
 const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_short.ogg'] });
 
-// Wait for OpenCV to load
+// Wait for OpenCV
 function onOpenCvReady(){
-    src = new cv.Mat(video.videoHeight || 480, video.videoWidth || 640, cv.CV_8UC4);
-    gray = new cv.Mat();
-    edges = new cv.Mat();
+    console.log('OpenCV loaded');
+    video.addEventListener('loadeddata',()=>{
+        // Initialize Mats once
+        const h = video.videoHeight;
+        const w = video.videoWidth;
+        src = new cv.Mat(h,w,cv.CV_8UC4);
+        gray = new cv.Mat();
+        edges = new cv.Mat();
 
-    // Load object detection model
-    cocoSsd.load().then(m => { model = m; detectFrame(); });
+        // Load object detection model
+        cocoSsd.load().then(m=>{
+            model = m;
+            detectFrame();
+        });
+    });
 }
 
 // Draw lane lines (dynamic or fallback)
 function drawLaneLines(edgePoints){
-    if(edgePoints.length>0){
+    if(edgePoints.length>10){ // some edges detected
         noLaneIcon.style.display='none';
         ctx.strokeStyle='rgba(0,255,0,0.5)';
         ctx.lineWidth=6;
@@ -78,24 +86,16 @@ function drawLaneLines(edgePoints){
         }
         ctx.stroke();
     } else {
-        // Fallback straight lines
+        // fallback straight lines
         noLaneIcon.style.display='flex';
         ctx.strokeStyle='rgba(0,255,0,0.3)';
         ctx.lineWidth=8;
-        // Left lane
-        ctx.beginPath();
-        ctx.moveTo(canvas.width/2 - 50, canvas.height);
-        ctx.lineTo(canvas.width/2 - 50, 0);
-        ctx.stroke();
-        // Right lane
-        ctx.beginPath();
-        ctx.moveTo(canvas.width/2 + 50, canvas.height);
-        ctx.lineTo(canvas.width/2 + 50, 0);
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(canvas.width/2-50,canvas.height); ctx.lineTo(canvas.width/2-50,0); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(canvas.width/2+50,canvas.height); ctx.lineTo(canvas.width/2+50,0); ctx.stroke();
     }
 }
 
-// Draw detected objects
+// Draw objects on road
 function drawObjects(predictions){
     predictions.forEach(pred=>{
         let scaleX = canvas.width/video.videoWidth;
@@ -106,21 +106,13 @@ function drawObjects(predictions){
         let h = pred.bbox[3]*scaleY;
 
         if(pred.class==='car'||pred.class==='truck'){
-            ctx.fillStyle='red';
-            ctx.fillRect(x,y,w,h);
+            ctx.fillStyle='red'; ctx.fillRect(x,y,w,h);
         } else if(pred.class==='dog'||pred.class==='cat'||pred.class==='person'){
-            ctx.fillStyle='orange';
-            ctx.beginPath();
-            ctx.arc(x+w/2, y+h/2, 15,0,Math.PI*2);
-            ctx.fill();
+            ctx.fillStyle='orange'; ctx.beginPath(); ctx.arc(x+w/2,y+h/2,15,0,Math.PI*2); ctx.fill();
         } else {
-            ctx.fillStyle='blue';
-            ctx.beginPath();
-            ctx.arc(x+w/2, y+h/2, 10,0,Math.PI*2);
-            ctx.fill();
+            ctx.fillStyle='blue'; ctx.beginPath(); ctx.arc(x+w/2,y+h/2,10,0,Math.PI*2); ctx.fill();
         }
 
-        // Proximity alarm
         if(h>150) beep.play();
     });
 }
@@ -128,17 +120,18 @@ function drawObjects(predictions){
 // Main loop
 function detectFrame(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
+
     if(video.readyState===video.HAVE_ENOUGH_DATA && src){
-        // Draw video
+        // Draw video background
         ctx.drawImage(video,0,0,canvas.width,canvas.height);
 
         // Lane detection
+        cv.imshow(src, video);
         src = cv.imread(video);
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         cv.GaussianBlur(gray, gray, new cv.Size(5,5),0);
         cv.Canny(gray, edges, 50,150);
 
-        // Extract edge points
         let edgePoints = [];
         for(let y=0; y<edges.rows; y+=8){
             for(let x=0; x<edges.cols; x+=8){
@@ -147,18 +140,16 @@ function detectFrame(){
                 }
             }
         }
+
         drawLaneLines(edgePoints);
         src.delete();
 
-        // Object detection
         if(model){
             model.detect(video).then(predictions=>{
                 drawObjects(predictions);
                 requestAnimationFrame(detectFrame);
             });
-        } else {
-            requestAnimationFrame(detectFrame);
-        }
+        } else requestAnimationFrame(detectFrame);
     } else {
         requestAnimationFrame(detectFrame);
     }
