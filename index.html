@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lane-Following 3D Road Detector</title>
+<title>Lane Detector with Fallback</title>
 <style>
 body, html { margin:0; padding:0; overflow:hidden; background:black; }
 #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
@@ -11,6 +11,13 @@ body, html { margin:0; padding:0; overflow:hidden; background:black; }
   position:absolute; top:10px; left:10px; z-index:2;
   background:rgba(255,255,255,0.8); padding:10px; border-radius:10px;
   box-shadow:0 2px 10px rgba(0,0,0,0.3);
+  font-family:sans-serif;
+}
+#no-lane {
+  position:absolute; top:10px; right:10px; z-index:3;
+  width:40px; height:40px; background:rgba(255,0,0,0.8);
+  color:white; display:flex; align-items:center; justify-content:center;
+  border-radius:5px; font-weight:bold; font-size:20px;
 }
 </style>
 </head>
@@ -20,6 +27,7 @@ body, html { margin:0; padding:0; overflow:hidden; background:black; }
 <h3>Lane-Following Detector</h3>
 <p>Green road lines follow detected lanes. Cars and objects appear on road.</p>
 </div>
+<div id="no-lane" style="display:none;">🚫</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.9.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -31,6 +39,7 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
+const noLaneIcon = document.getElementById('no-lane');
 
 // Camera setup
 const video = document.createElement('video');
@@ -49,81 +58,118 @@ const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_s
 
 // OpenCV setup
 let src, gray, edges;
-
 video.addEventListener('loadeddata',()=>{
     src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
     gray = new cv.Mat();
     edges = new cv.Mat();
 });
 
-function detectFrame(){
-    if(!model) return requestAnimationFrame(detectFrame);
-
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-
-    // Draw video as background
-    ctx.drawImage(video,0,0,canvas.width,canvas.height);
-
-    // Lane detection using OpenCV edge detection
-    if(src){
-        src.data.set(videoCapture(video, src.rows, src.cols));
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(gray, gray, new cv.Size(5,5),0);
-        cv.Canny(gray, edges, 50, 150);
-
-        // Get edge points for drawing lines
-        for(let y=0; y<edges.rows; y+=10){
-            for(let x=0; x<edges.cols; x+=10){
-                if(edges.ucharPtr(y,x)[0] > 0){
-                    ctx.fillStyle='rgba(0,255,0,0.5)';
-                    let drawX = x / edges.cols * canvas.width;
-                    let drawY = y / edges.rows * canvas.height;
-                    ctx.fillRect(drawX, drawY, 3,3);
-                }
-            }
+// Draw lane lines
+function drawLaneLines(edgePoints){
+    if(edgePoints.length>0){
+        noLaneIcon.style.display='none';
+        ctx.strokeStyle='rgba(0,255,0,0.5)';
+        ctx.lineWidth=6;
+        ctx.beginPath();
+        for(let i=0;i<edgePoints.length;i++){
+            let p = edgePoints[i];
+            ctx.lineTo(p.x,p.y);
         }
+        ctx.stroke();
+    } else {
+        // Fallback straight lines
+        noLaneIcon.style.display='flex';
+        ctx.strokeStyle='rgba(0,255,0,0.3)';
+        ctx.lineWidth=8;
+        // Left lane
+        ctx.beginPath();
+        ctx.moveTo(canvas.width/2 - 50, canvas.height);
+        ctx.lineTo(canvas.width/2 - 50, 0);
+        ctx.stroke();
+        // Right lane
+        ctx.beginPath();
+        ctx.moveTo(canvas.width/2 + 50, canvas.height);
+        ctx.lineTo(canvas.width/2 + 50, 0);
+        ctx.stroke();
     }
+}
 
-    // Object detection
-    model.detect(video).then(predictions=>{
-        predictions.forEach(pred=>{
-            let scaleX = canvas.width/video.videoWidth;
-            let scaleY = canvas.height/video.videoHeight;
-            let x = pred.bbox[0]*scaleX;
-            let y = pred.bbox[1]*scaleY;
-            let w = pred.bbox[2]*scaleX;
-            let h = pred.bbox[3]*scaleY;
+// Draw objects on road
+function drawObjects(predictions){
+    predictions.forEach(pred=>{
+        let scaleX = canvas.width/video.videoWidth;
+        let scaleY = canvas.height/video.videoHeight;
+        let x = pred.bbox[0]*scaleX;
+        let y = pred.bbox[1]*scaleY;
+        let w = pred.bbox[2]*scaleX;
+        let h = pred.bbox[3]*scaleY;
 
-            if(pred.class==='car' || pred.class==='truck'){
-                ctx.fillStyle='red';
-                ctx.fillRect(x,y,w,h);
-            } else if(pred.class==='dog' || pred.class==='cat' || pred.class==='person'){
-                ctx.fillStyle='orange';
-                ctx.beginPath();
-                ctx.arc(x+w/2, y+h/2, 15,0,Math.PI*2);
-                ctx.fill();
-            } else {
-                ctx.fillStyle='blue';
-                ctx.beginPath();
-                ctx.arc(x+w/2, y+h/2, 10,0,Math.PI*2);
-                ctx.fill();
-            }
+        if(pred.class==='car'||pred.class==='truck'){
+            ctx.fillStyle='red';
+            ctx.fillRect(x,y,w,h);
+        } else if(pred.class==='dog'||pred.class==='cat'||pred.class==='person'){
+            ctx.fillStyle='orange';
+            ctx.beginPath();
+            ctx.arc(x+w/2, y+h/2, 15,0,Math.PI*2);
+            ctx.fill();
+        } else {
+            ctx.fillStyle='blue';
+            ctx.beginPath();
+            ctx.arc(x+w/2, y+h/2, 10,0,Math.PI*2);
+            ctx.fill();
+        }
 
-            if(h>150) beep.play();
-        });
-        requestAnimationFrame(detectFrame);
+        if(h>150) beep.play();
     });
 }
 
-// Helper to capture video frame as Uint8ClampedArray for OpenCV
+// Main loop
+function detectFrame(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(video.readyState===video.HAVE_ENOUGH_DATA){
+        ctx.drawImage(video,0,0,canvas.width,canvas.height);
+
+        // Lane detection using OpenCV edge detection
+        if(src){
+            src.data.set(videoCapture(video, src.rows, src.cols));
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, gray, new cv.Size(5,5),0);
+            cv.Canny(gray, edges, 50,150);
+
+            // Extract edge points
+            let edgePoints = [];
+            for(let y=0; y<edges.rows; y+=8){
+                for(let x=0; x<edges.cols; x+=8){
+                    if(edges.ucharPtr(y,x)[0]>0){
+                        edgePoints.push({x:x/edges.cols*canvas.width, y:y/edges.rows*canvas.height});
+                    }
+                }
+            }
+            drawLaneLines(edgePoints);
+        }
+
+        // Object detection
+        if(model){
+            model.detect(video).then(predictions=>{
+                drawObjects(predictions);
+                requestAnimationFrame(detectFrame);
+            });
+        } else {
+            requestAnimationFrame(detectFrame);
+        }
+    } else {
+        requestAnimationFrame(detectFrame);
+    }
+}
+
+// Helper to capture video frame
 function videoCapture(video, height, width){
-    let tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = width; tmpCanvas.height = height;
-    let tmpCtx = tmpCanvas.getContext('2d');
+    let tmpCanvas=document.createElement('canvas');
+    tmpCanvas.width=width; tmpCanvas.height=height;
+    let tmpCtx=tmpCanvas.getContext('2d');
     tmpCtx.drawImage(video,0,0,width,height);
     return tmpCtx.getImageData(0,0,width,height).data;
 }
-
 </script>
 </body>
 </html>
