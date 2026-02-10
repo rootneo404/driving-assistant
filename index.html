@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lightweight Lane + Object Detector</title>
+<title>Stable Lane + Object Detector</title>
 <style>
 body, html { margin:0; padding:0; overflow:hidden; background:black; }
 #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
@@ -44,29 +44,27 @@ video.autoplay = true;
 video.muted = true;
 video.playsInline = true;
 
-// Load camera
 navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } })
 .then(stream => video.srcObject = stream);
 
 let model;
-cocoSsd.load().then(m=>{ model = m; detectFrame(); });
+cocoSsd.load().then(m=>{ model = m; });
 
 const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_short.ogg'] });
 
-// Simple lane detection using canvas pixel data
+// Simple lane detection
 function detectLane(frame){
     let w = frame.width;
     let h = frame.height;
     let regionH = Math.floor(h*0.4); // bottom 40% of frame
     let lanePoints = [];
-
     const data = frame.data;
     for(let y=h-regionH; y<h; y+=4){
         for(let x=0; x<w; x+=4){
             let i = (y*w + x)*4;
             let r = data[i], g=data[i+1], b=data[i+2];
             let brightness = (r+g+b)/3;
-            if(brightness>150){ // bright pixels likely lane
+            if(brightness>150){
                 lanePoints.push({x:x/w*canvas.width, y:y/h*canvas.height});
             }
         }
@@ -74,7 +72,6 @@ function detectLane(frame){
     return lanePoints;
 }
 
-// Draw lane lines
 function drawLaneLines(lanePoints){
     if(lanePoints.length>10){
         noLaneIcon.style.display='none';
@@ -117,7 +114,9 @@ function drawObjects(predictions){
     });
 }
 
-// Main loop
+let lastDetection = 0;
+const detectionInterval = 200; // ms -> 5 FPS object detection
+
 function detectFrame(){
     if(video.readyState!==video.HAVE_ENOUGH_DATA){
         requestAnimationFrame(detectFrame);
@@ -130,7 +129,9 @@ function detectFrame(){
     let lanePoints = detectLane(frame);
     drawLaneLines(lanePoints);
 
-    if(model){
+    const now = Date.now();
+    if(model && now - lastDetection > detectionInterval){
+        lastDetection = now;
         model.detect(video).then(pred=>{
             drawObjects(pred);
             requestAnimationFrame(detectFrame);
