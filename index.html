@@ -1,9 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Road Assistant</title>
+<style>
+body, html { margin:0; padding:0; overflow:hidden; background:black; font-family:sans-serif; }
+#canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+.ui-overlay {
+  position:absolute; top:10px; left:10px; z-index:2;
+  background:rgba(255,255,255,0.8); padding:10px; border-radius:10px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.3);
+  color:black;
+}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div class="ui-overlay">
+  <h3>3D Road Assistant</h3>
+  <p>Detects road lanes and cars; self-learning mode enabled.</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.9.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+<script async src="https://docs.opencv.org/4.8.0/opencv.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.3/howler.min.js"></script>
+
 <script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// Camera setup
+const video = document.createElement('video');
+video.autoplay = true;
+video.muted = true;
+video.playsInline = true;
+navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment" } })
+  .then(stream => video.srcObject = stream);
+
+// Alarm
+const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_short.ogg'] });
+
+// Load object detection
+let model;
+cocoSsd.load().then(m => { model = m; detectFrame(); });
+
+// Lane detection variables
 let leftLane = null;
 let rightLane = null;
-const laneHistory = { left: [], right: [], max: 5 }; // smoothing over last 5 frames
+const laneHistory = { left: [], right: [], max: 5 }; // smoothing
 
 function detectLanes(frame){
+  if(!cv || !cv.Mat) return;
+
   let src = cv.matFromImageData(frame);
   let gray = new cv.Mat();
   let edges = new cv.Mat();
@@ -11,7 +63,7 @@ function detectLanes(frame){
   cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
   cv.Canny(gray, edges, 50, 150);
 
-  // Define ROI polygon (bottom half of the image)
+  // ROI polygon (bottom 40% of screen)
   let mask = new cv.Mat.zeros(edges.rows, edges.cols, edges.type());
   let pts = cv.matFromArray(4,1,cv.CV_32SC2,[
     0, edges.rows,
@@ -26,12 +78,12 @@ function detectLanes(frame){
   let lines = new cv.Mat();
   cv.HoughLinesP(edges, lines, 1, Math.PI/180, 50, 50, 50);
 
-  // Separate left and right lines
+  // Separate left and right
   let leftLines = [], rightLines = [];
   for(let i=0; i<lines.rows; i++){
     let [x1,y1,x2,y2] = lines.data32S.slice(i*4,i*4+4);
     let slope = (y2 - y1) / (x2 - x1 + 0.0001);
-    if(Math.abs(slope) < 0.3) continue; // ignore almost horizontal
+    if(Math.abs(slope) < 0.3) continue; // skip horizontal
     if(slope < 0) leftLines.push([x1,y1,x2,y2]);
     else rightLines.push([x1,y1,x2,y2]);
   }
@@ -52,16 +104,14 @@ function detectLanes(frame){
   if(leftLane) {
     laneHistory.left.push(leftLane);
     if(laneHistory.left.length > laneHistory.max) laneHistory.left.shift();
-    leftLane = laneHistory.left.reduce((acc,l)=>{
-      return acc.map((v,i)=>v+l[i]);
-    }, [0,0,0,0]).map(v=>v/laneHistory.left.length);
+    leftLane = laneHistory.left.reduce((acc,l)=>acc.map((v,i)=>v+l[i]), [0,0,0,0])
+                 .map(v=>v/laneHistory.left.length);
   }
   if(rightLane) {
     laneHistory.right.push(rightLane);
     if(laneHistory.right.length > laneHistory.max) laneHistory.right.shift();
-    rightLane = laneHistory.right.reduce((acc,l)=>{
-      return acc.map((v,i)=>v+l[i]);
-    }, [0,0,0,0]).map(v=>v/laneHistory.right.length);
+    rightLane = laneHistory.right.reduce((acc,l)=>acc.map((v,i)=>v+l[i]), [0,0,0,0])
+                 .map(v=>v/laneHistory.right.length);
   }
 
   // Draw lanes
@@ -71,10 +121,66 @@ function detectLanes(frame){
     if(!l) return;
     ctx.beginPath();
     ctx.moveTo(l[0]*canvas.width/video.videoWidth, l[1]*canvas.height/video.videoHeight);
-    ctx.lineTo(l[2]*canvas.width/video.videoWidth, l[2]*canvas.height/video.videoHeight);
+    ctx.lineTo(l[2]*canvas.width/video.videoWidth, l[3]*canvas.height/video.videoHeight);
     ctx.stroke();
   });
 
   src.delete(); gray.delete(); edges.delete(); mask.delete(); lines.delete(); pts.delete();
 }
+
+// Draw detected objects
+function drawObjects(predictions){
+  predictions.forEach(pred => {
+    let x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
+    let y = canvas.height - pred.bbox[1];
+    let width = pred.bbox[2]/video.videoWidth*canvas.width/4;
+    let height = pred.bbox[3]/video.videoHeight*canvas.height/4;
+
+    // Car icon
+    if(pred.class==='car'||pred.class==='truck'){
+      ctx.fillStyle='red';
+      ctx.fillRect(x-width/2, y-height/2, width, height);
+    } else if(pred.class==='person'||pred.class==='dog'||pred.class==='cat'){
+      ctx.fillStyle='orange';
+      ctx.beginPath();
+      ctx.arc(x,y,Math.max(width,height)/2,0,Math.PI*2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle='blue';
+      ctx.beginPath();
+      ctx.arc(x,y,10,0,Math.PI*2);
+      ctx.fill();
+    }
+
+    // Proximity alarm
+    if(pred.bbox[3] > 150) beep.play();
+  });
+}
+
+// Self-training: save frames & predictions
+const trainingData = [];
+function saveTraining(frame, predictions){
+  trainingData.push({ frame: frame.data, predictions });
+}
+
+// Main loop
+function detectFrame(){
+  if(!model || !cv || !cv.Mat) return requestAnimationFrame(detectFrame);
+
+  // Draw video frame
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
+
+  // Lane detection
+  detectLanes(frame);
+
+  // Object detection
+  model.detect(video).then(predictions=>{
+    drawObjects(predictions);
+    saveTraining(frame, predictions);
+    requestAnimationFrame(detectFrame);
+  });
+}
 </script>
+</body>
+</html>
