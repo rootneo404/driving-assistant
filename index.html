@@ -91,7 +91,7 @@ function detectLanes(frame){
   ctx.strokeStyle = 'lime';
   ctx.lineWidth = 5;
 
-  for(let i=0; i<lines.rows && lineCount<6; i++){
+  for(let i=0; i<lines.rows && lineCount<3; i++){
     let [x1,y1,x2,y2] = lines.data32S.slice(i*4, i*4+4);
     let slope = (y2-y1)/(x2-x1+0.0001);
     if(Math.abs(slope) < 0.3) continue; // ignore horizontal
