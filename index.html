@@ -43,17 +43,42 @@ video.autoplay = true;
 video.muted = true;
 video.playsInline = true;
 
-navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment" } })
-  .then(stream => video.srcObject = stream);
-
 // Alarm
 const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_short.ogg'] });
 
+// Training data storage (predictions only)
+const trainingData = [];
+
 // Load object detection
 let model;
-cocoSsd.load().then(m => { model = m; detectFrame(); });
+cocoSsd.load().then(m => { model = m; checkReady(); });
 
-// OpenCV lane detection (max 6 mostly vertical/up lines)
+// Wait for OpenCV to load
+let cvReady = false;
+let Module = {
+  onRuntimeInitialized() { 
+    cvReady = true; 
+    checkReady();
+  }
+};
+
+// Get camera stream
+navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment" } })
+  .then(stream => {
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      video.play();
+      checkReady();
+    }
+  });
+
+function checkReady() {
+  if(model && cvReady && video.readyState >= 2) {
+    detectFrame();
+  }
+}
+
+// Draw lane lines (max 6 mostly vertical/up)
 function detectLanes(frame){
   let src = cv.matFromImageData(frame);
   let gray = new cv.Mat();
@@ -65,7 +90,6 @@ function detectLanes(frame){
   let lines = new cv.Mat();
   cv.HoughLinesP(edges, lines, 1, Math.PI/180, 50, 50, 150);
 
-  // Collect mostly vertical/upward lines
   const laneLines = [];
   for(let i=0; i<lines.rows; i++){
     let [x1, y1, x2, y2] = lines.data32S.slice(i*4, i*4+4);
@@ -73,7 +97,6 @@ function detectLanes(frame){
     if(angle > Math.PI/6) laneLines.push([x1, y1, x2, y2, angle]);
   }
 
-  // Sort by verticalness and take top 6
   laneLines.sort((a,b)=>Math.abs(Math.PI/2 - a[4]) - Math.abs(Math.PI/2 - b[4]));
   laneLines.slice(0,6).forEach(line=>{
     let [x1, y1, x2, y2] = line;
@@ -115,15 +138,14 @@ function drawObjects(predictions){
   });
 }
 
-// Self-training: only save predictions
-const trainingData = [];
+// Save only predictions
 function saveTraining(predictions){
   trainingData.push(predictions);
 }
 
 // Main loop
 function detectFrame(){
-  if(!model || !cv || !cv.Mat) return requestAnimationFrame(detectFrame);
+  if(!model || !cvReady) return requestAnimationFrame(detectFrame);
 
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
