@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>3D Road Assistant</title>
 <style>
-body, html { margin:0; padding:0; overflow:hidden; background:white; font-family:sans-serif; }
+body, html { margin:0; padding:0; overflow:hidden; background:black; font-family:sans-serif; }
 #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
 .ui-overlay {
   position:absolute; top:10px; left:10px; z-index:2;
@@ -13,7 +13,9 @@ body, html { margin:0; padding:0; overflow:hidden; background:white; font-family
   box-shadow:0 2px 10px rgba(0,0,0,0.3);
   color:black;
 }
-button { margin-top:10px; padding:5px 10px; font-size:14px; }
+button {
+  margin-top:10px; padding:5px 10px; font-size:14px;
+}
 </style>
 </head>
 <body>
@@ -21,11 +23,12 @@ button { margin-top:10px; padding:5px 10px; font-size:14px; }
 <div class="ui-overlay">
   <h3>3D Road Assistant</h3>
   <p>Detects road lanes and cars; self-learning mode enabled.</p>
-  <button id="downloadData">Download Training Data</button>
+  <button id="downloadBtn">Download Training Data</button>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.9.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+<script async src="https://docs.opencv.org/4.8.0/opencv.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.3/howler.min.js"></script>
 
 <script>
@@ -50,39 +53,41 @@ const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_s
 let model;
 cocoSsd.load().then(m => { model = m; detectFrame(); });
 
-// Training data
-const trainingData = [];
+// OpenCV lane detection
+function detectLanes(frame){
+  let src = cv.matFromImageData(frame);
+  let gray = new cv.Mat();
+  let edges = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
+  cv.Canny(gray, edges, 50, 150);
 
-// Draw two straight green lane lines next to each other
-function drawLanes(){
+  // Hough lines
+  let lines = new cv.Mat();
+  cv.HoughLinesP(edges, lines, 1, Math.PI/180, 50, 50, 150);
+
   ctx.strokeStyle = 'lime';
-  ctx.lineWidth = 20; // thick like real road
-  const laneGap = 40; // distance between the two lines
-  const centerX = canvas.width / 2;
-  const bottomY = canvas.height;
-  const topY = 100;
+  ctx.lineWidth = 5;
+  for(let i=0; i<lines.rows; i++){
+    let [x1, y1, x2, y2] = lines.data32S.slice(i*4, i*4+4);
+    ctx.beginPath();
+    ctx.moveTo(x1 * canvas.width/video.videoWidth, y1 * canvas.height/video.videoHeight);
+    ctx.lineTo(x2 * canvas.width/video.videoWidth, y2 * canvas.height/video.videoHeight);
+    ctx.stroke();
+  }
 
-  // Left lane
-  ctx.beginPath();
-  ctx.moveTo(centerX - laneGap/2, bottomY);
-  ctx.lineTo(centerX - laneGap/2, topY);
-  ctx.stroke();
-
-  // Right lane
-  ctx.beginPath();
-  ctx.moveTo(centerX + laneGap/2, bottomY);
-  ctx.lineTo(centerX + laneGap/2, topY);
-  ctx.stroke();
+  src.delete(); gray.delete(); edges.delete(); lines.delete();
 }
 
 // Draw detected objects
 function drawObjects(predictions){
   predictions.forEach(pred => {
-    const x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
-    const y = canvas.height - pred.bbox[1];
-    const width = pred.bbox[2]/video.videoWidth*canvas.width/4;
-    const height = pred.bbox[3]/video.videoHeight*canvas.height/4;
+    let x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
+    let y = canvas.height - pred.bbox[1];
+    let width = pred.bbox[2]/video.videoWidth*canvas.width/4;
+    let height = pred.bbox[3]/video.videoHeight*canvas.height/4;
 
+    // Car icon
     if(pred.class==='car'||pred.class==='truck'){
       ctx.fillStyle='red';
       ctx.fillRect(x-width/2, y-height/2, width, height);
@@ -98,49 +103,49 @@ function drawObjects(predictions){
       ctx.fill();
     }
 
+    // Proximity alarm
     if(pred.bbox[3] > 150) beep.play();
   });
 }
 
-// Save frames & predictions
+// Self-training: save frames & predictions
+const trainingData = [];
 function saveTraining(frame, predictions){
-  trainingData.push({ frame: Array.from(frame.data), predictions });
+  // Convert frame to base64 for easier download
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = frame.width;
+  tempCanvas.height = frame.height;
+  tempCanvas.getContext('2d').putImageData(frame, 0, 0);
+  const imgBase64 = tempCanvas.toDataURL('image/png');
+  trainingData.push({ frame: imgBase64, predictions });
+}
+
+// Main loop
+function detectFrame(){
+  if(!model || !cv || !cv.Mat) return requestAnimationFrame(detectFrame);
+
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
+
+  detectLanes(frame);
+
+  model.detect(video).then(predictions=>{
+    drawObjects(predictions);
+    saveTraining(frame, predictions); // store for self-training
+    requestAnimationFrame(detectFrame);
+  });
 }
 
 // Download training data
-document.getElementById('downloadData').addEventListener('click',()=>{
+document.getElementById('downloadBtn').addEventListener('click', ()=>{
   const blob = new Blob([JSON.stringify(trainingData)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'trainingData.json';
+  a.download = 'training_data.json';
   a.click();
   URL.revokeObjectURL(url);
 });
-
-// Main loop
-function detectFrame(){
-  if(!model) return requestAnimationFrame(detectFrame);
-
-  // Clear canvas & keep white background
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle = 'white';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-
-  // Draw green lane lines
-  drawLanes();
-
-  // Detect objects from video feed
-  model.detect(video).then(predictions=>{
-    drawObjects(predictions);
-
-    // Capture canvas for training
-    const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
-    saveTraining(frame, predictions);
-
-    requestAnimationFrame(detectFrame);
-  });
-}
 </script>
 </body>
 </html>
