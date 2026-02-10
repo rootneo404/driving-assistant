@@ -39,7 +39,7 @@ const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
-// Camera setup (for processing only)
+// Camera setup (for detection only)
 const video = document.createElement('video');
 video.autoplay = true;
 video.muted = true;
@@ -52,28 +52,25 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment" } })
 // Alarm
 const beep = new Howl({ src:['https://actions.google.com/sounds/v1/alarms/beep_short.ogg'] });
 
-// Lane detection variables
+// Lane detection smoothing
 let leftLane = null;
 let rightLane = null;
 const laneHistory = { left: [], right: [], max: 5 };
 
-// Training data storage
+// Self-learning storage
 const trainingData = [];
 
-// Wait for OpenCV to be ready
+// Wait for OpenCV.js
 function onOpenCvReady() {
     console.log("OpenCV.js is ready");
 
-    // Load object detection model
     cocoSsd.load().then(m => { 
         model = m; 
-        video.addEventListener('loadeddata', () => {
-            detectFrame();
-        });
+        video.addEventListener('loadeddata', () => detectFrame());
     });
 }
 
-// Lane detection function
+// Lane detection function (two lanes, smoothing, straight if unsure)
 function detectLanes(frame){
   if(!cv || !cv.Mat) return;
 
@@ -84,13 +81,13 @@ function detectLanes(frame){
   cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
   cv.Canny(gray, edges, 50, 150);
 
-  // ROI polygon (bottom 40% of screen)
+  // Region of interest (bottom 50% of frame)
   let mask = new cv.Mat.zeros(edges.rows, edges.cols, edges.type());
   let pts = cv.matFromArray(4,1,cv.CV_32SC2,[
     0, edges.rows,
     edges.cols, edges.rows,
-    edges.cols, edges.rows*0.6,
-    0, edges.rows*0.6
+    edges.cols, edges.rows*0.5,
+    0, edges.rows*0.5
   ]);
   cv.fillPoly(mask, [pts], [255,255,255,255]);
   cv.bitwise_and(edges, mask, edges);
@@ -99,40 +96,35 @@ function detectLanes(frame){
   let lines = new cv.Mat();
   cv.HoughLinesP(edges, lines, 1, Math.PI/180, 50, 50, 50);
 
-  // Separate left and right
   let leftLines = [], rightLines = [];
-  for(let i=0; i<lines.rows; i++){
+  for(let i=0;i<lines.rows;i++){
     let [x1,y1,x2,y2] = lines.data32S.slice(i*4,i*4+4);
     let slope = (y2 - y1) / (x2 - x1 + 0.0001);
-    if(Math.abs(slope) < 0.3) continue;
-    if(slope < 0) leftLines.push([x1,y1,x2,y2]);
+    if(Math.abs(slope)<0.3) continue;
+    if(slope<0) leftLines.push([x1,y1,x2,y2]);
     else rightLines.push([x1,y1,x2,y2]);
   }
 
   function averageLine(lines){
-    if(lines.length === 0) return null;
+    if(lines.length===0) return null;
     let x1=0,y1=0,x2=0,y2=0;
-    lines.forEach(l=>{
-      x1 += l[0]; y1 += l[1]; x2 += l[2]; y2 += l[3];
-    });
+    lines.forEach(l=>{ x1+=l[0]; y1+=l[1]; x2+=l[2]; y2+=l[3]; });
     return [x1/lines.length, y1/lines.length, x2/lines.length, y2/lines.length];
   }
 
-  leftLane = averageLine(leftLines) || leftLane;
-  rightLane = averageLine(rightLines) || rightLane;
+  leftLane = averageLine(leftLines) || leftLane || [0,edges.rows,edges.cols*0.25,edges.rows*0.5];
+  rightLane = averageLine(rightLines) || rightLane || [edges.cols,edges.rows,edges.cols*0.75,edges.rows*0.5];
 
-  // Smoothing
-  if(leftLane) {
+  // Smooth lanes
+  if(leftLane){
     laneHistory.left.push(leftLane);
-    if(laneHistory.left.length > laneHistory.max) laneHistory.left.shift();
-    leftLane = laneHistory.left.reduce((acc,l)=>acc.map((v,i)=>v+l[i]), [0,0,0,0])
-                 .map(v=>v/laneHistory.left.length);
+    if(laneHistory.left.length>laneHistory.max) laneHistory.left.shift();
+    leftLane = laneHistory.left.reduce((acc,l)=>acc.map((v,i)=>v+l[i]),[0,0,0,0]).map(v=>v/laneHistory.left.length);
   }
-  if(rightLane) {
+  if(rightLane){
     laneHistory.right.push(rightLane);
-    if(laneHistory.right.length > laneHistory.max) laneHistory.right.shift();
-    rightLane = laneHistory.right.reduce((acc,l)=>acc.map((v,i)=>v+l[i]), [0,0,0,0])
-                 .map(v=>v/laneHistory.right.length);
+    if(laneHistory.right.length>laneHistory.max) laneHistory.right.shift();
+    rightLane = laneHistory.right.reduce((acc,l)=>acc.map((v,i)=>v+l[i]),[0,0,0,0]).map(v=>v/laneHistory.right.length);
   }
 
   // Draw lanes
@@ -149,9 +141,9 @@ function detectLanes(frame){
   src.delete(); gray.delete(); edges.delete(); mask.delete(); lines.delete(); pts.delete();
 }
 
-// Draw detected objects
+// Draw objects
 function drawObjects(predictions){
-  predictions.forEach(pred => {
+  predictions.forEach(pred=>{
     let x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
     let y = canvas.height - pred.bbox[1];
     let width = pred.bbox[2]/video.videoWidth*canvas.width/4;
@@ -172,13 +164,12 @@ function drawObjects(predictions){
       ctx.fill();
     }
 
-    if(pred.bbox[3] > 150) beep.play();
+    if(pred.bbox[3]>150) beep.play();
   });
 }
 
-// Self-training storage
+// Save training data
 function saveTraining(frame, predictions){
-  // Save the frame data + predictions in memory
   trainingData.push({ frame: frame.data, predictions });
 }
 
@@ -187,18 +178,19 @@ function detectFrame(){
   if(!model || !cv || !cv.Mat) return requestAnimationFrame(detectFrame);
 
   // Clear canvas
-  ctx.fillStyle = 'white';
+  ctx.fillStyle='white';
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // Capture camera frame for processing only
+  // Capture video frame for processing only
   const frameCanvas = document.createElement('canvas');
   frameCanvas.width = video.videoWidth;
   frameCanvas.height = video.videoHeight;
-  frameCanvas.getContext('2d').drawImage(video,0,0);
-  const frameData = frameCanvas.getContext('2d').getImageData(0,0,video.videoWidth,video.videoHeight);
+  const frameCtx = frameCanvas.getContext('2d');
+  frameCtx.drawImage(video,0,0);
+  const frameData = frameCtx.getImageData(0,0,video.videoWidth,video.videoHeight);
 
+  // Detect lanes & objects
   detectLanes(frameData);
-
   model.detect(video).then(predictions=>{
     drawObjects(predictions);
     saveTraining(frameData, predictions);
@@ -206,23 +198,20 @@ function detectFrame(){
   });
 }
 
-// Button to save training data to JSON file
-document.getElementById('saveTrainingBtn').addEventListener('click', () => {
-    if(trainingData.length === 0) {
-        alert("No training data collected yet!");
-        return;
-    }
-    const blob = new Blob([JSON.stringify(trainingData)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = "trainingData.json";  // <-- file name
-    a.click();
-    URL.revokeObjectURL(url);
+// Button to save training data
+document.getElementById('saveTrainingBtn').addEventListener('click', ()=>{
+  if(trainingData.length===0){ alert("No training data collected!"); return; }
+  const blob = new Blob([JSON.stringify(trainingData)],{type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = "trainingData.json";
+  a.click();
+  URL.revokeObjectURL(url);
 });
 
-// OpenCV.js ready
-window.cv = window.cv || {};
+// OpenCV ready
+window.cv = window.cv||{};
 cv['onRuntimeInitialized'] = onOpenCvReady;
 </script>
 </body>
