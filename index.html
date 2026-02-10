@@ -26,7 +26,6 @@ button { margin-top:10px; padding:5px 10px; font-size:14px; }
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.9.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
-<script async src="https://docs.opencv.org/4.8.0/opencv.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.3/howler.min.js"></script>
 
 <script>
@@ -54,38 +53,35 @@ cocoSsd.load().then(m => { model = m; detectFrame(); });
 // Training data
 const trainingData = [];
 
-// Draw two straight lane lines (next to each other)
-function detectLanes(){
-  ctx.strokeStyle = 'gray';
+// Draw two straight green lane lines next to each other
+function drawLanes(){
+  ctx.strokeStyle = 'lime';
   ctx.lineWidth = 20; // thick like real road
-  const laneWidth = 40; // distance between the two lines
-  const roadWidth = 100; // overall road width
+  const laneGap = 40; // distance between the two lines
+  const centerX = canvas.width / 2;
   const bottomY = canvas.height;
   const topY = 100;
 
-  // Center X
-  const centerX = canvas.width / 2;
-
-  // Left lane line
+  // Left lane
   ctx.beginPath();
-  ctx.moveTo(centerX - laneWidth/2, bottomY);
-  ctx.lineTo(centerX - laneWidth/2, topY);
+  ctx.moveTo(centerX - laneGap/2, bottomY);
+  ctx.lineTo(centerX - laneGap/2, topY);
   ctx.stroke();
 
-  // Right lane line
+  // Right lane
   ctx.beginPath();
-  ctx.moveTo(centerX + laneWidth/2, bottomY);
-  ctx.lineTo(centerX + laneWidth/2, topY);
+  ctx.moveTo(centerX + laneGap/2, bottomY);
+  ctx.lineTo(centerX + laneGap/2, topY);
   ctx.stroke();
 }
 
 // Draw detected objects
 function drawObjects(predictions){
   predictions.forEach(pred => {
-    let x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
-    let y = canvas.height - pred.bbox[1];
-    let width = pred.bbox[2]/video.videoWidth*canvas.width/4;
-    let height = pred.bbox[3]/video.videoHeight*canvas.height/4;
+    const x = canvas.width/2 + (pred.bbox[0]-video.videoWidth/2)/2;
+    const y = canvas.height - pred.bbox[1];
+    const width = pred.bbox[2]/video.videoWidth*canvas.width/4;
+    const height = pred.bbox[3]/video.videoHeight*canvas.height/4;
 
     if(pred.class==='car'||pred.class==='truck'){
       ctx.fillStyle='red';
@@ -126,19 +122,19 @@ document.getElementById('downloadData').addEventListener('click',()=>{
 function detectFrame(){
   if(!model) return requestAnimationFrame(detectFrame);
 
-  // Clear canvas but keep background white
+  // Clear canvas & keep white background
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle = 'white';
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // Draw lane lines only (road)
-  detectLanes();
+  // Draw green lane lines
+  drawLanes();
 
-  // Object detection (video used only for detection)
+  // Detect objects from video feed
   model.detect(video).then(predictions=>{
     drawObjects(predictions);
 
-    // capture frame for training
+    // Capture canvas for training
     const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
     saveTraining(frame, predictions);
 
